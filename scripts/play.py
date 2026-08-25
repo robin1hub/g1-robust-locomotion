@@ -32,6 +32,12 @@ class PlayConfig:
   video_width: int | None = None
   camera: int | str | None = None
   viewer: Literal["auto", "native", "viser"] = "auto"
+  command_speed_mps: float | None = None
+  """Optional fixed forward-speed command for velocity-policy playback."""
+  command_lateral_speed_mps: float = 0.0
+  """Fixed body-frame lateral command used with ``command_speed_mps``."""
+  command_yaw_rate_radps: float = 0.0
+  """Fixed body-frame yaw-rate command used with ``command_speed_mps``."""
   no_terminations: bool = False
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
 
@@ -46,6 +52,29 @@ def run_play(task_id: str, cfg: PlayConfig):
 
   env_cfg = load_env_cfg(task_id, play=True)
   agent_cfg = load_rl_cfg(task_id)
+
+  if cfg.command_speed_mps is not None:
+    if cfg.command_speed_mps < 0:
+      raise ValueError("command_speed_mps must be non-negative")
+    if "twist" not in env_cfg.commands:
+      raise ValueError("Fixed velocity commands require a 'twist' command term")
+    command_cfg = env_cfg.commands["twist"]
+    if not hasattr(command_cfg, "ranges"):
+      raise TypeError("Expected a velocity command config with ranges for 'twist'")
+    command_cfg.ranges.lin_vel_x = (cfg.command_speed_mps, cfg.command_speed_mps)
+    command_cfg.ranges.lin_vel_y = (
+      cfg.command_lateral_speed_mps,
+      cfg.command_lateral_speed_mps,
+    )
+    command_cfg.ranges.ang_vel_z = (
+      cfg.command_yaw_rate_radps,
+      cfg.command_yaw_rate_radps,
+    )
+    if hasattr(command_cfg, "rel_combined_envs"):
+      command_cfg.rel_straight_envs = 0.0
+      command_cfg.rel_lateral_envs = 0.0
+      command_cfg.rel_turn_envs = 0.0
+      command_cfg.rel_combined_envs = 1.0
 
   DUMMY_MODE = cfg.agent in {"zero", "random"}
   TRAINED_MODE = not DUMMY_MODE

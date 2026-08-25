@@ -617,6 +617,42 @@ clean 成功率为 99.5%（基线 100%，差 1/192 episode），Body MPKPE 从 0
 - 16-env×2 smoke `2026-08-25_03-31-15_sprint_s3_speed340_smoke_16`正常完成。Actor/Critic397/113维、S2 model399加载、3.4范围、回放和symmetry均正常；两轮无fall/illegal/NaN。第二轮slip0.825、power约1073 W只是极短初始化窗口，但提示S3可能触及接触/功率瓶颈。
 - 正式run于03:31 UTC在物理GPU1启动：`logs/rsl_rl/g1_velocity/2026-08-25_03-31-41_sprint_s3_speed340_4096_400`，4096×400、save25、seed42，PPO参数沿用S2。iteration4～7任务切换期fall/illegal窗口计数较高、episode length约90～129；到iteration38 episode length恢复579、fall0.375、illegal0.0833，说明生存能力正在恢复。同期slip仍0.6655 m/s、power约792 W。
 - S3采用硬门控：固定3.4 m/s实际速度/命令≥90%，DR独立评测fall与illegal各≤2%，foot slip≤0.55 m/s；旧速度、lat和yaw需继续回归。若速度/生存通过但slip超标，保留最佳checkpoint并新增单变量S3-slip实验（提高滑移接触期惩罚或加入速度相关滑移门控），不直接进入3.4～4.0 m/s。
+- 正式run完成400 iterations、39,321,600 environment steps，生成`model_0/25/.../375/399.pt`共17个checkpoint及ONNX。训练reward从-1.28升至iteration350的58.11，末轮57.48；episode length从16.9恢复到后半程基本600/600，末轮fall0、illegal窗口0.0417。训练足滑在iteration25约0.664，后期最低约0.641，显示稳定性恢复但滑移没有降回S2水平。
+- DR seed42×64、固定vx=3.4的全checkpoint筛选位于`evaluations/Unitree-G1-Sprint-S3-Speed340/seed42/screen_vx340`。`model_0`失败率90.6%、实际1.836 m/s；到`model_50`失败率已降至1.56%、实际3.130 m/s；`model_75`后基本稳定。综合最佳为`model_375`：实际3.222、跟踪率94.77%、vx RMSE0.562、return70.06、slip0.607、64/64无失败。`model_399`实际3.201、RMSE0.589且1/64非法接触，存在轻微末轮退化。
+- `model_375`多seed复核位于`evaluations/Unitree-G1-Sprint-S3-Speed340/multiseed/model375_vx340`：seeds 11/23/42/67/89共320 episodes，fall0、illegal1/320=0.3125%，实际vx3.21165 m/s、跟踪率94.46%、vx RMSE0.56724、xy RMSE0.57147、foot slip0.61001 m/s、heading RMS6.74°、return69.78。
+- 判定：速度门槛`3.212≥3.06 m/s`通过，生存门槛`0.31%≤2%`通过，足滑门槛`0.610>0.55 m/s`失败。S3标记`needs_slip_optimization`，保留`model_375.pt`为候选起点，不进入S4。下一实验S3-slip只调整足滑相关约束，weights-only重置优化器；速度≥3.06、总失败≤2%、DR slip≤0.55三项同时通过后，才做旧速度与三维命令回归并升级。
+
+### S3-slip A：foot-slip 权重 -0.4 → -0.8
+
+- 为保证视频命令与评测完全一致，`scripts/play.py`新增固定前进/横移/yaw-rate参数，并在分类命令任务中强制100% combined以绕过轴掩码。用S3`model_375.pt`录制固定3.4 m/s、500帧/50 FPS、1280×720视频，输出`logs/rsl_rl/g1_velocity/2026-08-25_03-31-41_sprint_s3_speed340_4096_400/videos/play/rl-video-step-0.mp4`；文件2.43 MB、时长10秒，抽查第50/150/250/350/450帧均保持奔跑。
+- 代码审计确认原`feet_slip`已经使用`contact_sensor.found>0`门控，并对接触足端世界系xy速度平方求和；训练日志记录的均值与独立评测采用同类定义。A组因此只改变一个变量：weight -0.4→-0.8，不修改函数形状。
+- 新任务`Unitree-G1-Sprint-S3-Slip-W080`及启动器`scripts/run_g1_sprint_s3_slip_w080.sh`已实现。注册、Python编译和配置断言通过；16-env×2 smoke目录`2026-08-25_06-18-42_sprint_s3_slip_w080_smoke_16`完成，确认397/113维、foot-slip -0.8、weights-only、symmetry和3.4 m/s课程生效，无fall/illegal/NaN。
+- 正式run于06:19 UTC在物理GPU1启动：`logs/rsl_rl/g1_velocity/2026-08-25_06-19-08_sprint_s3_slip_w080_4096_150`。规模4096×150、save25、seed42，从S3`model_375.pt`权重级热启动并重置optimizer/counter；PPO与S3相同。先用短实验回答加倍惩罚是否能把DR slip从0.610降至≤0.55，同时要求实际vx≥3.06、总失败≤2%。
+
+### S3-natural-v1：LAFAN1相位动作风格先验
+
+- 人工视频验收否决原S3动作：高速与生存虽通过，但存在膝关节偏直、脚向前探、支撑期滑步、上肢摆动僵硬，不能作为“自然奔跑”结果。按用户指令中止正在运行的S3-slip W080；中止时约iteration60，落盘`model_0/25/50.pt`，训练slip约0.628 m/s。该run标记`stopped_by_design_review`，不从其checkpoint继续。
+- 数据审计：`lafan1_run1_subject2_112s_115s.npz`共149帧/50 Hz，root平均平移速度约2.066 m/s。全序列关节自相关与首尾姿态/速度距离均表明40帧为稳定周期；选择69:109时首尾联合误差最低之一。phase0左脚接近落地、phase0.5右脚接近落地，与现有`offset=[0,0.5]`一致。
+- 新增stateful reward `phase_motion_joint_style`：按速度自适应period将episode phase映射到40帧参考并线性插值，返回`exp(-weighted_joint_mse/std²)`；腿/腰/臂权重1.0/0.5/0.7，std0.45 rad、reward weight1.5。它不跟踪世界root轨迹，不强制参考速度，只提供屈膝、对侧摆臂和周期姿态风格。
+- `Unitree-G1-Sprint-S3-Natural-v1`继承S3全部速度、三维命令、DR、终止、symmetry和PPO，同时继承foot-slip -0.8。16-env×2 smoke `2026-08-25_06-30-02_sprint_s3_natural_v1_smoke_16`通过；初始style RMSE0.658 rad并在第二轮降至0.541，奖励非饱和，无fall/illegal/NaN。
+- 正式run于06:30 UTC在GPU1启动：`logs/rsl_rl/g1_velocity/2026-08-25_06-30-40_sprint_s3_natural_v1_4096_200`，4096×200、save25、seed42，从原S3`model_375.pt`weights-only开始。iteration11 style RMSE约0.493，说明策略已收到明确风格梯度；早期episode/failure仍处于任务切换恢复期，不作最终判断。验收增加同摄像机10秒视频盲审，定量门槛仍为vx≥3.06、总失败≤2%、slip≤0.55。
+
+### Natural-v1视频否决与3.4 m/s tracking expert启动
+
+- Natural-v1正式训练完成200 iterations、19,660,800 steps，最终`model_199.pt`；末轮reward62.49、episode600、fall/illegal0，style joint RMSE由0.658降至0.408 rad，实际躯干前倾13.50°，训练slip约0.596。数值表明风格先验有效但没有达到足滑0.55。
+- 同视角固定3.4 m/s视频已生成：`logs/rsl_rl/g1_velocity/2026-08-25_06-30-40_sprint_s3_natural_v1_4096_200/videos/play/rl-video-step-0.mp4`。抽帧显示膝部较S3更弯、前倾更明确，但上臂仍后收且腿部仍以蹬滑为主。按新增的人眼硬门槛判定`visual_style_failed`，不再从速度策略局部最优继续加大弱style reward。
+- 新增通用工具`scripts/time_scale_motion.py`。对原LAFAN G1 NPZ进行连续线性/四元数最短弧归一化插值，位置轨迹不变，joint/body线角速度乘时间倍率。倍率3.4/2.066=1.6457后得到91帧、1.8秒、root平面速度3.397 m/s的`src/assets/motions/g1/lafan1_run1_subject2_112s_115s_speed340.npz`，所有数组finite。
+- 旧T001 robust tracking`model_9999.pt`直接跟踪加速motion的1.8秒视频位于`artifacts/sprint_tracking_speed340/videos/play/rl-video-step-0.mp4`。实际机器人仍呈自然屈膝和对侧摆臂，但ghost参考逐渐领先；结论是动作流形正确、速度适应不足，适合weights-only微调。
+- 新增`scripts/run_g1_tracking_sprint340_probe.sh`：`Unitree-G1-Tracking-Robust`、4096×500、save50、lr1e-4、clip0.1、KL0.005、8 mini-batches，从T001`model_9999.pt`重置优化器。16-env×2 smoke `2026-08-25_06-50-14_tracking_sprint340_probe_smoke_16`通过。
+- 正式run于06:51 UTC在GPU1启动：`logs/rsl_rl/g1_tracking/2026-08-25_06-51-21_tracking_sprint340_probe_4096_500`。iteration0因速度突变mean episode14.64 steps、主要为ee-body-pos终止，吞吐约19.4k steps/s、ETA约42分钟；保留adaptive phase sampling与joint DR，后续以episode length和body/joint tracking误差是否持续改善判断探针有效性。
+
+### Tracking sprint 3.4 m/s 探针完成与选优
+
+- 4096×500正式run正常完成，目录`logs/rsl_rl/g1_tracking/2026-08-25_06-51-21_tracking_sprint340_probe_4096_500`；生成`model_0/50/.../450/499.pt`和`policy.onnx`。iteration0→499：mean reward 0.0297→24.2788，episode length 14.64→497.84/500，body position error 0.1032→0.1746 m（早期数值受大量短回合影响），joint position error 1.1045→0.7650 rad，joint velocity error 16.12→14.02 rad/s。model350的episode length 499.90/500最高，model499的最终reward、anchor velocity和joint position更优，因此二者都进入视频/clean比较。
+- 同一91帧、1.8秒加速参考录制了两条720p视频：`artifacts/sprint_tracking_speed340/model350/videos/play/rl-video-step-0.mp4`和`artifacts/sprint_tracking_speed340/model499/videos/play/rl-video-step-0.mp4`。抽查第10/30/50/70/85帧：两者均出现自然屈膝、腾空和交替摆臂；model499整体更靠近ghost，未出现原S3的直腿滑行局部最优。
+- clean seed42×64一次完整参考片段评测：model350成功率100%、body MPKPE 0.05009 m、joint position RMSE 0.13220 rad、foot slip 0.34657 m/s、root displacement 5.60446 m；model499成功率100%、body MPKPE 0.04776 m、joint position RMSE 0.12861 rad、foot slip 0.33367 m/s、root displacement 5.60531 m。model499相对model350的MPKPE降低约4.65%、foot slip降低约3.72%，选为当前3.4 m/s tracking expert。
+- 结果目录：`evaluations/Unitree-G1-Tracking/sprint340_model350_clean_seed42`与`evaluations/Unitree-G1-Tracking/sprint340_model499_clean_seed42`。用户提醒所有GPU均已被占用后，不再启动多seed/DR矩阵；检查确认本项目无残留训练或评测进程。
+- 当前结论边界：这证明了3.4 m/s自然动作可以由强tracking策略稳定复现，但它仍是固定动作expert，不等同于可接收任意`vx/vy/yaw`的通用奔跑策略。下一实验应在GPU空闲后先做多seed、摩擦/推扰动评测；通过后再以expert轨迹进行蒸馏或teacher-student微调。
 
 ## 7. 文档维护规则
 

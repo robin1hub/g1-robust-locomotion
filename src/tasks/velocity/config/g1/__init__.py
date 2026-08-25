@@ -19,6 +19,8 @@ from .env_cfgs import (
   unitree_g1_sprint_s1_speed220_env_cfg,
   unitree_g1_sprint_s2_speed280_env_cfg,
   unitree_g1_sprint_s3_speed340_env_cfg,
+  unitree_g1_sprint_s3_slip_w080_env_cfg,
+  unitree_g1_sprint_s3_natural_v1_env_cfg,
 )
 from .rl_cfg import (
   unitree_g1_ppo_runner_cfg,
@@ -159,6 +161,22 @@ register_mjlab_task(
   task_id="Unitree-G1-Sprint-S3-Speed340",
   env_cfg=unitree_g1_sprint_s3_speed340_env_cfg(),
   play_env_cfg=unitree_g1_sprint_s3_speed340_env_cfg(play=True),
+  rl_cfg=unitree_g1_symmetry_ppo_runner_cfg(),
+  runner_cls=VelocityOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Unitree-G1-Sprint-S3-Slip-W080",
+  env_cfg=unitree_g1_sprint_s3_slip_w080_env_cfg(),
+  play_env_cfg=unitree_g1_sprint_s3_slip_w080_env_cfg(play=True),
+  rl_cfg=unitree_g1_symmetry_ppo_runner_cfg(),
+  runner_cls=VelocityOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Unitree-G1-Sprint-S3-Natural-v1",
+  env_cfg=unitree_g1_sprint_s3_natural_v1_env_cfg(),
+  play_env_cfg=unitree_g1_sprint_s3_natural_v1_env_cfg(play=True),
   rl_cfg=unitree_g1_symmetry_ppo_runner_cfg(),
   runner_cls=VelocityOnPolicyRunner,
 )

@@ -13,6 +13,7 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
@@ -23,6 +24,7 @@ from src.tasks.velocity.mdp.rewards import (
   forward_velocity_tracking_error_l2,
   normalized_mechanical_power,
   outward_lateral_velocity,
+  phase_motion_joint_style,
   straight_track_lane_barrier_l4,
   straight_track_heading_error_l2,
   straight_track_lateral_position_l2,
@@ -988,4 +990,36 @@ def unitree_g1_sprint_s3_speed340_env_cfg(
         "ang_vel_z": (-0.50, 0.50),
       },
     ]
+  return cfg
+
+
+def unitree_g1_sprint_s3_slip_w080_env_cfg(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """S3 slip ablation A: double only the contact-slip penalty."""
+  cfg = unitree_g1_sprint_s3_speed340_env_cfg(play=play)
+  cfg.rewards["foot_slip"].weight = -0.8
+  return cfg
+
+
+def unitree_g1_sprint_s3_natural_v1_env_cfg(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """S3 natural-running fine-tuning with a phase-aligned motion style prior."""
+  cfg = unitree_g1_sprint_s3_slip_w080_env_cfg(play=play)
+  cfg.rewards["motion_joint_style"] = RewardTermCfg(
+    func=phase_motion_joint_style,
+    weight=1.5,
+    params={
+      "motion_file": "src/assets/motions/g1/lafan1_run1_subject2_112s_115s.npz",
+      "frame_start": 69,
+      "frame_end": 109,
+      "command_name": "twist",
+      "std": 0.45,
+      "speed_range": (0.5, 4.0),
+      "period_range": (0.55, 0.30),
+      "minimum_speed": 1.5,
+      "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+    },
+  )
   return cfg

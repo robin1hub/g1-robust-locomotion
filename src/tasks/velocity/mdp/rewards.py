@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 
 from mjlab.entity import Entity
@@ -443,6 +445,76 @@ def adaptive_running_gait(
   actual_contact = sensor.data.current_contact_time > 0
   reward = (expected_contact == actual_contact).float().mean(dim=1)
   return reward * (speed >= lo).float()
+
+
+class phase_motion_joint_style:
+  """Reward a phase-aligned running pose from a retargeted G1 motion cycle.
+
+  The reference supplies style only. Forward speed, balance, contacts, and
+  robustness remain controlled by the velocity task's existing rewards.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    motion_file = Path(cfg.params["motion_file"]).expanduser()
+    if not motion_file.is_absolute():
+      motion_file = Path.cwd() / motion_file
+    with np.load(motion_file) as motion:
+      joint_pos = motion["joint_pos"]
+    frame_start = int(cfg.params["frame_start"])
+    frame_end = int(cfg.params["frame_end"])
+    reference = joint_pos[frame_start:frame_end]
+    if reference.ndim != 2 or len(reference) < 2:
+      raise ValueError("Motion style reference must contain at least two frames")
+
+    asset: Entity = env.scene[cfg.params["asset_cfg"].name]
+    joint_count = asset.data.joint_pos[:, cfg.params["asset_cfg"].joint_ids].shape[1]
+    if reference.shape[1] != joint_count:
+      raise ValueError(
+        f"Motion has {reference.shape[1]} joints but environment has {joint_count}"
+      )
+    self.reference = torch.as_tensor(reference, device=env.device, dtype=torch.float32)
+
+    # Legs define foot placement and knee flexion; arms retain a softer style
+    # target so PPO can still use them for balance and turning.
+    joint_weights = torch.ones(joint_count, device=env.device)
+    joint_weights[12:15] = 0.5
+    joint_weights[15:] = 0.7
+    self.joint_weights = joint_weights
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    motion_file: str,
+    frame_start: int,
+    frame_end: int,
+    command_name: str,
+    std: float,
+    speed_range: tuple[float, float],
+    period_range: tuple[float, float],
+    minimum_speed: float,
+    asset_cfg: SceneEntityCfg,
+  ) -> torch.Tensor:
+    del motion_file, frame_start, frame_end
+    asset: Entity = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    speed = torch.clamp(command[:, 0], min=0.0)
+    period = running_gait_period(speed, speed_range, period_range)
+    phase = torch.remainder((env.episode_length_buf * env.step_dt) / period, 1.0)
+
+    frame = phase * self.reference.shape[0]
+    index0 = torch.floor(frame).long() % self.reference.shape[0]
+    index1 = (index0 + 1) % self.reference.shape[0]
+    alpha = (frame - torch.floor(frame)).unsqueeze(1)
+    target = self.reference[index0] * (1.0 - alpha) + self.reference[index1] * alpha
+
+    current = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    squared_error = torch.square(current - target) * self.joint_weights
+    mse = torch.mean(squared_error, dim=1)
+    env.extras["log"]["Metrics/motion_style_joint_rmse"] = torch.sqrt(
+      torch.mean(mse)
+    )
+    return torch.exp(-mse / std**2) * (speed >= minimum_speed).float()
 
 
 class feet_swing_height:
