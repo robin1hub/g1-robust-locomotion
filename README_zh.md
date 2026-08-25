@@ -23,6 +23,9 @@ Mjlab 结合了 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) 的成熟高�
 
 安装和配置步骤请参考 [setup.md](doc/setup_zh.md)
 
+本仓库 G1 自然奔跑实验的当前状态、跨服务器模型迁移、回放、评测与续训流程，请参考
+[G1 自然奔跑项目交接与跨服务器部署手册](HANDOFF_DEPLOYMENT_ZH.md)。
+
 
 ## 🔁 流程概览
 
@@ -231,4 +234,3 @@ cd deploy/robots/g1/build
 - [rsl_rl](https://github.com/leggedrobotics/rsl_rl.git): 强化学习算法实现。
 - [mujoco_warp](https://github.com/google-deepmind/mujoco_warp.git): 提供 GPU 加速渲染与仿真接口。
 - [mujoco](https://github.com/google-deepmind/mujoco.git): 提供强大仿真功能。
-
