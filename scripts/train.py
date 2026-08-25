@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,8 @@ class TrainConfig:
   video_length: int = 200
   video_interval: int = 2000
   enable_nan_guard: bool = False
+  weights_only_resume: bool = False
+  """Load actor/critic weights but reset optimizer, iteration, and curriculum state."""
   torchrunx_log_dir: str | None = None
   gpu_ids: list[int] | Literal["all"] | None = field(default_factory=lambda: [0])
 
@@ -132,6 +135,9 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   # Wrapper 把 MjLab 环境适配为 RSL-RL 需要的向量环境接口。
 
   agent_cfg = asdict(cfg.agent)
+  # RSL-RL extensions may inject live runtime objects (for example `_env` for
+  # symmetry) into this dict. Preserve a serialization-safe snapshot first.
+  agent_cfg_for_dump = deepcopy(agent_cfg)
   env_cfg = asdict(cfg.env)
 
   runner_cls = load_runner_cls(task_id)
@@ -145,12 +151,26 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   runner.add_git_repo_to_log(__file__)
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-    runner.load(str(resume_path))
+    if cfg.weights_only_resume:
+      runner.load(
+        str(resume_path),
+        load_cfg={
+          "actor": True,
+          "critic": True,
+          "optimizer": False,
+          "iteration": False,
+          "rnd": False,
+        },
+      )
+      env.unwrapped.common_step_counter = 0
+      print("[INFO]: Loaded actor/critic weights only; reset optimizer and counters.")
+    else:
+      runner.load(str(resume_path))
 
   # Only write config files from rank 0 to avoid race conditions.
   if rank == 0:
     dump_yaml(log_dir / "params" / "env.yaml", env_cfg)
-    dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
+    dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg_for_dump)
 
   runner.learn(
     num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True

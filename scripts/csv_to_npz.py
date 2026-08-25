@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import tyro
 import os
+import imageio.v2 as imageio
 from tqdm import tqdm
 
 import mjlab
@@ -307,6 +308,10 @@ def run_sim(
         ):
           log[k] = np.stack(log[k], axis=0)
         np.savez(output_path, **log)  # type: ignore[arg-type]
+        if render and frames:
+          video_path = os.path.splitext(output_path)[0] + ".mp4"
+          imageio.mimsave(video_path, frames, fps=output_fps)
+          print(f"Saved preview video to {video_path}")
 
 
 def main(
@@ -412,6 +417,7 @@ def main(
       distance=2.0,
       elevation=-5.0,
       azimuth=20,
+      entity_name="robot",
     )
     renderer = OffscreenRenderer(
       model=sim.mj_model,

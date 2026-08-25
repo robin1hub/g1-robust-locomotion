@@ -8,10 +8,12 @@ from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import BuiltinSensor, ContactSensor
-from mjlab.utils.lab_api.math import quat_apply_inverse
+from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
 )
+
+from .observations import running_gait_period
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -64,6 +66,160 @@ def track_angular_velocity(
   return torch.exp(-ang_vel_error / std**2)
 
 
+def yaw_rate_tracking_error_l2(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Non-saturating squared body-frame yaw-rate tracking error."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None, f"Command '{command_name}' not found."
+  return torch.square(command[:, 2] - asset.data.root_link_ang_vel_b[:, 2])
+
+
+def forward_velocity_tracking_error_l2(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Non-saturating squared body-frame forward-velocity tracking error."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None, f"Command '{command_name}' not found."
+  return torch.square(command[:, 0] - asset.data.root_link_lin_vel_b[:, 0])
+
+
+def forward_progress(
+  env: ManagerBasedRlEnv,
+  max_speed: float = 4.5,
+  upright_power: float = 2.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward forward speed while suppressing fall-and-slide reward exploits."""
+  asset: Entity = env.scene[asset_cfg.name]
+  forward_speed = torch.clamp(asset.data.root_link_lin_vel_b[:, 0], 0.0, max_speed)
+  tilt_sq = torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+  upright_gate = torch.exp(-upright_power * tilt_sq)
+  return (forward_speed / max_speed) * upright_gate
+
+
+def straight_track_progress(
+  env: ManagerBasedRlEnv,
+  max_speed: float = 4.5,
+  lane_half_width: float = 0.9,
+  upright_power: float = 2.0,
+  heading_power: float = 2.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward world-frame +X progress only while upright, aligned, and in lane.
+
+  Unlike body-frame forward speed, this cannot be maximized by continuously
+  turning the robot. The lane gate also prevents sideways drift followed by a
+  late correction from receiving the same reward as a straight sprint.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  world_velocity = asset.data.root_link_lin_vel_w
+  world_forward_speed = torch.clamp(world_velocity[:, 0], 0.0, max_speed)
+
+  body_forward = torch.zeros_like(world_velocity)
+  body_forward[:, 0] = 1.0
+  forward_axis_w = quat_apply(asset.data.root_link_quat_w, body_forward)
+  heading_gate = torch.clamp(forward_axis_w[:, 0], 0.0, 1.0).pow(heading_power)
+
+  lateral_position = asset.data.root_link_pos_w[:, 1] - env.scene.env_origins[:, 1]
+  lane_gate = torch.exp(-torch.square(lateral_position / lane_half_width))
+  tilt_sq = torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+  upright_gate = torch.exp(-upright_power * tilt_sq)
+
+  env.extras["log"]["Metrics/world_forward_speed_mps"] = torch.mean(
+    world_velocity[:, 0]
+  )
+  env.extras["log"]["Metrics/lateral_position_abs_m"] = torch.mean(
+    torch.abs(lateral_position)
+  )
+  env.extras["log"]["Metrics/heading_alignment"] = torch.mean(forward_axis_w[:, 0])
+  return (world_forward_speed / max_speed) * heading_gate * lane_gate * upright_gate
+
+
+def straight_track_lateral_position_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize squared distance from the world-frame straight track centerline."""
+  asset: Entity = env.scene[asset_cfg.name]
+  lateral_position = asset.data.root_link_pos_w[:, 1] - env.scene.env_origins[:, 1]
+  return torch.square(lateral_position)
+
+
+def straight_track_lane_barrier_l4(
+  env: ManagerBasedRlEnv,
+  lane_half_width: float = 0.9,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Barrier-like lane cost that grows rapidly near the track boundary."""
+  asset: Entity = env.scene[asset_cfg.name]
+  lateral_position = asset.data.root_link_pos_w[:, 1] - env.scene.env_origins[:, 1]
+  return torch.pow(torch.abs(lateral_position) / lane_half_width, 4)
+
+
+def outward_lateral_velocity(
+  env: ManagerBasedRlEnv,
+  center_deadzone: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize velocity that increases distance from the track centerline."""
+  asset: Entity = env.scene[asset_cfg.name]
+  lateral_position = asset.data.root_link_pos_w[:, 1] - env.scene.env_origins[:, 1]
+  outward_speed = torch.sign(lateral_position) * asset.data.root_link_lin_vel_w[:, 1]
+  active = torch.abs(lateral_position) > center_deadzone
+  return torch.where(active, torch.relu(outward_speed), torch.zeros_like(outward_speed))
+
+
+def world_lateral_velocity_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize world-frame lateral velocity during a straight sprint."""
+  asset: Entity = env.scene[asset_cfg.name]
+  return torch.square(asset.data.root_link_lin_vel_w[:, 1])
+
+
+def straight_track_heading_error_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize deviation of the robot's forward axis from world +X."""
+  asset: Entity = env.scene[asset_cfg.name]
+  body_forward = torch.zeros_like(asset.data.root_link_lin_vel_w)
+  body_forward[:, 0] = 1.0
+  forward_axis_w = quat_apply(asset.data.root_link_quat_w, body_forward)
+  return torch.square(1.0 - forward_axis_w[:, 0]) + torch.square(forward_axis_w[:, 1])
+
+
+def world_yaw_rate_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize world-frame yaw rate to close the Marathon-v1 spin loophole."""
+  asset: Entity = env.scene[asset_cfg.name]
+  return torch.square(asset.data.root_link_ang_vel_w[:, 2])
+
+
+def normalized_mechanical_power(
+  env: ManagerBasedRlEnv,
+  power_scale: float = 1000.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Mechanical power proxy, normalized to keep reward weights interpretable."""
+  asset: Entity = env.scene[asset_cfg.name]
+  actuator_force = asset.data.actuator_force[:, asset_cfg.joint_ids]
+  joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+  power = torch.sum(torch.abs(actuator_force * joint_vel), dim=1)
+  env.extras["log"]["Metrics/mechanical_power_mean_w"] = torch.mean(power)
+  return power / power_scale
+
+
 def body_orientation_l2(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -88,6 +244,41 @@ def body_orientation_l2(
   # 直立时重力在机体系主要指向 z，xy 投影接近0。配置给它负权重，因此倾斜越多
   # 总奖励扣得越多。
   return xy_squared
+
+
+def speed_dependent_torso_lean_l2(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  speed_range: tuple[float, float] = (1.5, 2.2),
+  lean_range_deg: tuple[float, float] = (2.0, 8.0),
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize torso roll and error from a speed-dependent forward lean target."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None, f"Command '{command_name}' not found."
+  if asset_cfg.body_ids:
+    body_quat_w = asset.data.body_link_quat_w[:, asset_cfg.body_ids, :].squeeze(1)
+    projected_gravity_b = quat_apply_inverse(body_quat_w, asset.data.gravity_vec_w)
+  else:
+    projected_gravity_b = asset.data.projected_gravity_b
+
+  speed_lo, speed_hi = speed_range
+  blend = torch.clamp(
+    (command[:, 0] - speed_lo) / max(speed_hi - speed_lo, 1.0e-6), 0.0, 1.0
+  )
+  lean_lo, lean_hi = lean_range_deg
+  target_lean_rad = torch.deg2rad(lean_lo + blend * (lean_hi - lean_lo))
+  target_gravity_x = torch.sin(target_lean_rad)
+  pitch_error = projected_gravity_b[:, 0] - target_gravity_x
+  roll_error = projected_gravity_b[:, 1]
+  env.extras["log"]["Metrics/target_torso_lean_deg"] = torch.mean(
+    torch.rad2deg(target_lean_rad)
+  )
+  env.extras["log"]["Metrics/actual_torso_lean_deg"] = torch.mean(
+    torch.rad2deg(torch.asin(torch.clamp(projected_gravity_b[:, 0], -1.0, 1.0)))
+  )
+  return torch.square(pitch_error) + torch.square(roll_error)
 
 
 def self_collision_cost(
@@ -128,10 +319,13 @@ def body_angular_velocity_penalty(
 def angular_momentum_penalty(
   env: ManagerBasedRlEnv,
   sensor_name: str,
+  penalize_yaw: bool = True,
 ) -> torch.Tensor:
   """Penalize whole-body angular momentum to encourage natural arm swing."""
   angmom_sensor: BuiltinSensor = env.scene[sensor_name]
   angmom = angmom_sensor.data
+  if not penalize_yaw:
+    angmom = angmom[..., :2]
   angmom_magnitude_sq = torch.sum(torch.square(angmom), dim=-1)
   angmom_magnitude = torch.sqrt(angmom_magnitude_sq)
   env.extras["log"]["Metrics/angular_momentum_mean"] = torch.mean(angmom_magnitude)
@@ -219,6 +413,36 @@ def feet_gait(
             scale = (total_command > command_threshold).float()
             reward *= scale
     return reward
+
+
+def adaptive_running_gait(
+  env: ManagerBasedRlEnv,
+  offset: list[float],
+  command_name: str,
+  sensor_name: str,
+  speed_range: tuple[float, float] = (0.5, 4.0),
+  period_range: tuple[float, float] = (0.55, 0.30),
+  stance_range: tuple[float, float] = (0.55, 0.38),
+) -> torch.Tensor:
+  """Match a speed-adaptive alternating gait with a flight phase at high speed."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+
+  speed = torch.clamp(command[:, 0], min=0.0)
+  lo, hi = speed_range
+  blend = torch.clamp((speed - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+  slow_stance, fast_stance = stance_range
+  period = running_gait_period(speed, speed_range, period_range)
+  stance_ratio = slow_stance + blend * (fast_stance - slow_stance)
+
+  global_phase = (env.episode_length_buf * env.step_dt) / period
+  offsets = torch.as_tensor(offset, device=env.device, dtype=global_phase.dtype)
+  leg_phase = (global_phase.unsqueeze(1) + offsets.unsqueeze(0)) % 1.0
+  expected_contact = leg_phase < stance_ratio.unsqueeze(1)
+  actual_contact = sensor.data.current_contact_time > 0
+  reward = (expected_contact == actual_contact).float().mean(dim=1)
+  return reward * (speed >= lo).float()
 
 
 class feet_swing_height:

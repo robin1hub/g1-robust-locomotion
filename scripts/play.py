@@ -159,6 +159,16 @@ def run_play(task_id: str, cfg: PlayConfig):
     )
     policy = runner.get_inference_policy(device=device)
 
+  # Offline recording does not need an interactive viewer. Stepping the wrapped
+  # environment directly also makes video generation work on headless servers
+  # and guarantees that the recorder is closed after the requested frame count.
+  if TRAINED_MODE and cfg.video:
+    obs = env.get_observations()
+    for _ in range(cfg.video_length):
+      obs, _, _, _ = env.step(policy(obs))
+    env.close()
+    return
+
   # Handle "auto" viewer selection.
   if cfg.viewer == "auto":
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))

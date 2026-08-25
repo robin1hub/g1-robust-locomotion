@@ -246,6 +246,44 @@ class UniformVelocityCommand(CommandTerm):
       )
 
 
+class MixedVelocityCommand(UniformVelocityCommand):
+  """Velocity commands with a configurable fraction of straight-only samples."""
+
+  cfg: MixedVelocityCommandCfg
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    super()._resample_command(env_ids)
+    straight = torch.rand(len(env_ids), device=self.device) < self.cfg.rel_straight_envs
+    straight_ids = env_ids[straight]
+    self.vel_command_b[straight_ids, 1:] = 0.0
+
+
+class CategoricalVelocityCommand(UniformVelocityCommand):
+  """Sample mutually exclusive straight, lateral, turn, and combined commands."""
+
+  cfg: CategoricalVelocityCommandCfg
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    super()._resample_command(env_ids)
+    sample = torch.rand(len(env_ids), device=self.device)
+    straight_end = self.cfg.rel_straight_envs
+    lateral_end = straight_end + self.cfg.rel_lateral_envs
+    turn_end = lateral_end + self.cfg.rel_turn_envs
+
+    straight_ids = env_ids[sample < straight_end]
+    lateral_ids = env_ids[(sample >= straight_end) & (sample < lateral_end)]
+    turn_ids = env_ids[(sample >= lateral_end) & (sample < turn_end)]
+    self.vel_command_b[straight_ids, 1:] = 0.0
+    self.vel_command_b[lateral_ids, 2] = 0.0
+    self.vel_command_b[turn_ids, 1] = 0.0
+
+    if self.cfg.rel_speed_replay_envs > 0.0:
+      assert self.cfg.replay_lin_vel_x is not None
+      replay = torch.rand(len(env_ids), device=self.device)
+      replay_ids = env_ids[replay < self.cfg.rel_speed_replay_envs]
+      self.vel_command_b[replay_ids, 0].uniform_(*self.cfg.replay_lin_vel_x)
+
+
 @dataclass(kw_only=True)
 class UniformVelocityCommandCfg(CommandTermCfg):
   entity_name: str
@@ -280,3 +318,44 @@ class UniformVelocityCommandCfg(CommandTermCfg):
         "The velocity command has heading commands active (heading_command=True) but "
         "the `ranges.heading` parameter is set to None."
       )
+
+
+@dataclass(kw_only=True)
+class MixedVelocityCommandCfg(UniformVelocityCommandCfg):
+  """Uniform velocity command with straight-command retention."""
+
+  rel_straight_envs: float = 0.5
+
+  def build(self, env: ManagerBasedRlEnv) -> MixedVelocityCommand:
+    if not 0.0 <= self.rel_straight_envs <= 1.0:
+      raise ValueError("rel_straight_envs must be in [0, 1]")
+    return MixedVelocityCommand(self, env)
+
+
+@dataclass(kw_only=True)
+class CategoricalVelocityCommandCfg(UniformVelocityCommandCfg):
+  """Mixture probabilities for low-level velocity skill commands."""
+
+  rel_straight_envs: float = 0.35
+  rel_lateral_envs: float = 0.25
+  rel_turn_envs: float = 0.30
+  rel_combined_envs: float = 0.10
+  rel_speed_replay_envs: float = 0.0
+  replay_lin_vel_x: tuple[float, float] | None = None
+
+  def build(self, env: ManagerBasedRlEnv) -> CategoricalVelocityCommand:
+    probabilities = (
+      self.rel_straight_envs,
+      self.rel_lateral_envs,
+      self.rel_turn_envs,
+      self.rel_combined_envs,
+    )
+    if any(probability < 0.0 for probability in probabilities):
+      raise ValueError("Categorical command probabilities must be non-negative")
+    if abs(sum(probabilities) - 1.0) > 1.0e-6:
+      raise ValueError("Categorical command probabilities must sum to 1")
+    if not 0.0 <= self.rel_speed_replay_envs <= 1.0:
+      raise ValueError("rel_speed_replay_envs must be in [0, 1]")
+    if self.rel_speed_replay_envs > 0.0 and self.replay_lin_vel_x is None:
+      raise ValueError("replay_lin_vel_x is required when speed replay is enabled")
+    return CategoricalVelocityCommand(self, env)

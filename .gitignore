@@ -11,15 +11,21 @@ deploy/robots/g1_23dof/build
 deploy/robots/r1/build
 deploy/robots/a2/build
 src/assets/motions/g1/dance1_subject2.npz
+src/assets/motions/g1/lafan1_*.csv
+src/assets/motions/g1/lafan1_*.npz
+src/assets/motions/g1/lafan1_*.mp4
 simulate/build
 
 # Local development and experiment artifacts.
 __pycache__/
 *.py[cod]
 .g1_full_console_log
+.g1_rough_*_console_log
 env.sh
 deployment/
 evaluations/
+data_external/
+artifacts/
 HANDOFF.md
 yanghao_read.md
 学习路线.md

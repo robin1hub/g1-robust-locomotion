@@ -1,10 +1,20 @@
 """RL configuration for Unitree G1 velocity task."""
 
+from dataclasses import asdict, dataclass
+from typing import Any
+
 from mjlab.rl import (
   RslRlModelCfg,
   RslRlOnPolicyRunnerCfg,
   RslRlPpoAlgorithmCfg,
 )
+
+
+@dataclass
+class G1SymmetryPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
+  """PPO config with the RSL-RL symmetry extension exposed to serialization."""
+
+  symmetry_cfg: dict[str, Any] | None = None
 
 
 def unitree_g1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -51,3 +61,20 @@ def unitree_g1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     # 每轮先让每个并行环境采样24步。因此4096环境每轮约得到98304个样本。
     max_iterations=10001,
   )
+
+
+def unitree_g1_symmetry_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """G1 PPO config using mirrored transition augmentation only."""
+  cfg = unitree_g1_ppo_runner_cfg()
+  cfg.algorithm = G1SymmetryPpoAlgorithmCfg(
+    **asdict(cfg.algorithm),
+    symmetry_cfg={
+      "use_data_augmentation": True,
+      "use_mirror_loss": False,
+      "mirror_loss_coeff": 0.0,
+      "data_augmentation_func": (
+        "src.tasks.velocity.mdp.symmetry:g1_lateral_symmetry"
+      ),
+    },
+  )
+  return cfg

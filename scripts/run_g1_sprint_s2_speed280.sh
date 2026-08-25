@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /data/users/yanghao/projects/unitree_rl_mjlab
+
+exec env \
+  CUDA_VISIBLE_DEVICES=1 \
+  MUJOCO_GL=egl \
+  MUJOCO_EGL_DEVICE_ID=0 \
+  LD_LIBRARY_PATH=/data/users/yanghao/envs/humanoid/unitree_rl_mjlab-py311/lib \
+  MPLCONFIGDIR=/data/users/yanghao/tmp/matplotlib \
+  /data/users/yanghao/envs/humanoid/unitree_rl_mjlab-py311/bin/python \
+  scripts/train.py Unitree-G1-Sprint-S2-Speed280 \
+  --env.scene.num-envs 4096 \
+  --env.scene.terrain.num-envs 4096 \
+  --agent.max-iterations 400 \
+  --agent.save-interval 25 \
+  --agent.algorithm.learning-rate 0.0001 \
+  --agent.algorithm.clip-param 0.1 \
+  --agent.algorithm.desired-kl 0.005 \
+  --agent.algorithm.entropy-coef 0.004 \
+  --agent.algorithm.num-mini-batches 8 \
+  --agent.run-name sprint_s2_speed280_4096_400 \
+  --agent.logger tensorboard \
+  --agent.resume True \
+  --agent.load-run 2026-08-24_06-28-40_sprint_s1_speed220_4096_300 \
+  --agent.load-checkpoint model_299.pt \
+  --weights-only-resume True \
+  --gpu-ids '[0]' \
+  --video False
