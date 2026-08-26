@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING, cast
 
 import torch
 
+from mjlab.entity import Entity
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 from mjlab.utils.lab_api.math import quat_error_magnitude
 
@@ -11,6 +13,9 @@ from .commands import MotionCommand
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
+
+
+_DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
 def _get_body_indexes(
@@ -111,6 +116,26 @@ def motion_global_body_angular_velocity_error_exp(
     dim=-1,
   )
   return torch.exp(-error.mean(-1) / std**2)
+
+
+def tracking_feet_slip(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize horizontal velocity of feet while they contact the ground."""
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  assert contact_sensor.data.found is not None
+  in_contact = (contact_sensor.data.found > 0).float()
+  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]
+  slip_speed = torch.linalg.vector_norm(foot_vel_xy, dim=-1)
+  cost = torch.sum(torch.square(slip_speed) * in_contact, dim=1)
+
+  contact_count = torch.clamp(torch.sum(in_contact), min=1)
+  mean_slip = torch.sum(slip_speed * in_contact) / contact_count
+  env.extras["log"]["Metrics/tracking_foot_slip"] = mean_slip
+  return cost
 
 
 def self_collision_cost(

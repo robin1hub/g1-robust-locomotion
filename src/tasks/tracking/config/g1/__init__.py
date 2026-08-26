@@ -2,7 +2,9 @@ from mjlab.tasks.registry import register_mjlab_task
 from src.tasks.tracking.rl import MotionTrackingOnPolicyRunner
 
 from .env_cfgs import (
+  unitree_g1_antislip_tracking_env_cfg,
   unitree_g1_flat_tracking_env_cfg,
+  unitree_g1_robust_antislip_tracking_env_cfg,
   unitree_g1_robust_history_tracking_env_cfg,
   unitree_g1_robust_tracking_env_cfg,
 )
@@ -17,9 +19,25 @@ register_mjlab_task(
 )
 
 register_mjlab_task(
+  task_id="Unitree-G1-Tracking-AntiSlip",
+  env_cfg=unitree_g1_antislip_tracking_env_cfg(),
+  play_env_cfg=unitree_g1_antislip_tracking_env_cfg(play=True),
+  rl_cfg=unitree_g1_tracking_ppo_runner_cfg(),
+  runner_cls=MotionTrackingOnPolicyRunner,
+)
+
+register_mjlab_task(
   task_id="Unitree-G1-Tracking-Robust",
   env_cfg=unitree_g1_robust_tracking_env_cfg(),
   play_env_cfg=unitree_g1_robust_tracking_env_cfg(play=True),
+  rl_cfg=unitree_g1_tracking_ppo_runner_cfg(),
+  runner_cls=MotionTrackingOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Unitree-G1-Tracking-Robust-AntiSlip",
+  env_cfg=unitree_g1_robust_antislip_tracking_env_cfg(),
+  play_env_cfg=unitree_g1_robust_antislip_tracking_env_cfg(play=True),
   rl_cfg=unitree_g1_tracking_ppo_runner_cfg(),
   runner_cls=MotionTrackingOnPolicyRunner,
 )

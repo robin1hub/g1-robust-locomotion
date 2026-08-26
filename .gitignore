@@ -14,6 +14,8 @@ src/assets/motions/g1/dance1_subject2.npz
 src/assets/motions/g1/lafan1_*.csv
 src/assets/motions/g1/lafan1_*.npz
 src/assets/motions/g1/lafan1_*.mp4
+src/assets/motions/g1/motiondecode_*.npz
+src/assets/motions/g1/motiondecode_*.mp4
 simulate/build
 
 # Local development and experiment artifacts.

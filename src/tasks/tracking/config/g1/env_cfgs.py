@@ -13,6 +13,7 @@ from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg
+from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
@@ -218,6 +219,53 @@ def unitree_g1_robust_tracking_env_cfg(
     )
   }
   return cfg
+
+
+def _add_foot_slip_penalty(
+  cfg: ManagerBasedRlEnvCfg, weight: float
+) -> ManagerBasedRlEnvCfg:
+  feet_ground_cfg = ContactSensorCfg(
+    name="feet_ground_contact",
+    primary=ContactMatch(
+      mode="subtree",
+      pattern=r"^(left_ankle_roll_link|right_ankle_roll_link)$",
+      entity="robot",
+    ),
+    secondary=ContactMatch(mode="body", pattern="terrain"),
+    fields=("found", "force"),
+    reduce="netforce",
+    num_slots=1,
+    track_air_time=True,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (feet_ground_cfg,)
+  cfg.sim.contact_sensor_maxmatch = max(cfg.sim.contact_sensor_maxmatch, 500)
+  cfg.rewards["foot_slip"] = RewardTermCfg(
+    func=tracking_mdp.tracking_feet_slip,
+    weight=weight,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "asset_cfg": SceneEntityCfg(
+        "robot", site_names=("left_foot", "right_foot")
+      ),
+    },
+  )
+  return cfg
+
+
+def unitree_g1_antislip_tracking_env_cfg(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Flat tracking with a light stance-foot sliding penalty."""
+  cfg = unitree_g1_flat_tracking_env_cfg(play=play)
+  return _add_foot_slip_penalty(cfg, weight=-0.05)
+
+
+def unitree_g1_robust_antislip_tracking_env_cfg(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Robust tracking with a direct penalty on stance-foot sliding."""
+  cfg = unitree_g1_robust_tracking_env_cfg(play=play)
+  return _add_foot_slip_penalty(cfg, weight=-0.25)
 
 
 def unitree_g1_robust_history_tracking_env_cfg(

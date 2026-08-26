@@ -473,6 +473,116 @@ ssh -L 6006:127.0.0.1:6006 username@new-server
 
 这些 checkpoint 默认都不在 GitHub。若下一阶段要做 expert-to-policy 蒸馏，至少迁移 tracking `model_499`、velocity S3 `model_375`、原始动作和3.4 m/s动作。
 
+### 12.1 自然冲刺参考（2026-08-26）
+
+`speed400` 是普通 `run1` 片段的时间缩放版本，不是原始冲刺动作。下一阶段应优先使用 LAFAN1 官方 `Sprint` 类别的 `sprint1`。官方 BVH 已缓存到：
+
+```text
+/data/users/root/cache/g1-robust/lafan1-official/sprint/sprint1_subject2.bvh
+/data/users/root/cache/g1-robust/lafan1-official/sprint/sprint1_subject4.bvh
+```
+
+已下载的 G1 29-DoF 重定向 CSV 位于：
+
+```text
+/data/users/root/cache/g1-robust/lafan1-retargeted-g1/sprint1_subject2.csv
+/data/users/root/cache/g1-robust/lafan1-retargeted-g1/sprint1_subject4.csv
+```
+
+候选窗口转换后均为50 Hz、99帧：
+
+| 候选 | 原始帧范围（零基、右开） | NPZ | 参考速度 | 结论 |
+|---|---:|---|---:|---|
+| S4-A | `3115:3175` | `lafan1_sprint1_subject4_103p83s_105p83s.npz` | 3.860 m/s | 最快，波动和肩部不对称略大 |
+| S4-B | `3775:3835` | `lafan1_sprint1_subject4_125p83s_127p83s.npz` | 3.800 m/s | **拒绝：末段减速并后倾制动** |
+| S2-A | `3570:3630` | `lafan1_sprint1_subject2_119s_121s.npz` | 3.536 m/s | 髋部侧摆和根部偏航偏大 |
+
+复核发现 S4-B 最后约0.4秒从约4.23 m/s减速到3.18 m/s，躯干由前倾转为平均后倾8度，末帧约后倾13度，不能作为主训练参考。完整动作扫描后改用：
+
+| 用途 | 原始帧范围（零基、右开） | NPZ | 平均速度 | 姿态结论 |
+|---|---:|---|---:|---|
+| 已拒绝 | `5019:5065` | `lafan1_sprint1_subject4_167p30s_168p80s_steady.npz` | 3.990 m/s | 约1.04秒后开始转为直立减速姿态 |
+| 课程备选 | `3866:3913` | `lafan1_sprint1_subject4_128p87s_130p40s_accel.npz` | 3.948 m/s | 加速冲刺，前倾更强，速度约3.03到4.28 m/s |
+
+复核表明，根速度统计无法可靠识别人体已经进入减速姿态，因此目前没有任何 LAFAN1 `sprint1` 窗口被批准为恒速冲刺主参考。加速段只可用于以后带阶段标签的课程，不能单独长期训练。
+
+新的恒速候选来自 MotionDecode 的 `BG_Sprint_run_00687`：从高速平台提取原始帧 `506:578` 的0.60秒完整步态周期，进行小幅首尾闭合后重复5次，并把根速度固定为4.3 m/s：
+
+```text
+src/assets/motions/g1/motiondecode_BG_Sprint_run_00687_cycle_periodic_v430.npz
+```
+
+该候选共150帧、2.98秒，净速度4.301 m/s，躯干前倾始终为21.7到27.1度，每0.60秒关节姿态闭合。它已消除停止/制动阶段，但重定向参考仍有支撑脚横向滑动，因此状态是“待抗滑训练验证”，尚未批准为最终参考。生成脚本为 `scripts/build_periodic_sprint_reference.py`。数据源：`https://huggingface.co/datasets/CMRobot/MotionDecode`。
+
+2026-08-26 已在6张共享 RTX 4090 上完成短适配验证：每卡512环境，共3072环境；先跑5轮探针，再从探针 `model_4.pt` 跑20轮。共享训练峰值额外占用约为 GPU0 2.9 GiB、其余卡各0.9 GiB，训练期间采样利用率约13%到21%，退出后显存全部回到原进程基线。20轮末 episode length 仅24.12步（约0.48秒），anchor linear velocity error 1.5031 m/s，foot slip 0.8924，说明直接从 `speed400` 权重切换到该4.3 m/s参考没有成功。不要继续堆叠该实验轮数；下一步应采用逐级速度课程，并在早期阶段关闭或放宽高频终止与强随机化，待存活时间稳定后再恢复抗滑约束。
+
+对应运行目录：
+
+```text
+logs/rsl_rl/g1_tracking/2026-08-26_07-03-39_tracking_sprint430_periodic_shared_6gpu_512_each_probe5
+logs/rsl_rl/g1_tracking/2026-08-26_07-07-15_tracking_sprint430_periodic_shared_6gpu_512_each_adapt20
+```
+
+数据来源：Ubisoft 官方 LAFAN1 仓库 `https://github.com/ubisoft/ubisoft-laforge-animation-dataset`；G1 重定向数据 `https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset/tree/main/g1`。LAFAN1 官方许可为 CC BY-NC-ND 4.0，外发或重新发布重定向资产前必须单独确认许可条件；原始 CSV/BVH 不提交到本仓库。
+
+### 12.2 MotionDecode 00435 速度课程结果（2026-08-26）
+
+`BG_Sprint_run_00435` 的1.48秒高速窗口没有停止或制动尾段，原始参考净速度为
+4.371 m/s。保持空间姿态不变并逐级缩短动作时长，比直接切换到00687周期动作稳定得多。
+
+| 参考速度 | 选取 checkpoint | clean seed42 实际速度 | 成功率 | Body MPKPE | Foot slip |
+|---:|---|---:|---:|---:|---:|
+| 4.371 m/s | `07-39-14.../model_99.pt` | 3.819 m/s | 98.4% | 0.0589 m | 0.475 m/s |
+| 4.828 m/s | `07-51-54.../model_99.pt` | 4.266 m/s | 100% | 0.0548 m | 0.545 m/s |
+| 5.218 m/s | `07-57-48.../model_99.pt` | 4.630 m/s | 100% | 0.0574 m | 0.630 m/s |
+| 5.577 m/s | `08-06-06.../model_80.pt` | 4.865 m/s | 100% | 0.0657 m | 0.732 m/s |
+| 5.577 m/s + 防滑 | `08-14-49.../model_20.pt` | 4.859 m/s | 100% | 0.0657 m | 0.652 m/s |
+
+最终选择最后一行作为当前高速均衡模型。轻量 `-0.05` 支撑脚滑移惩罚相对未防滑
+`model_80` 将滑移降低约10.9%，速度只降低约0.1%。不要用防滑 run 的最后一轮：
+`model_59` 虽达到4.887 m/s，但滑移回升到0.719 m/s。
+
+关键资产及校验值：
+
+```text
+src/assets/motions/g1/motiondecode_BG_Sprint_run_00435_fast1p5s_speed560.npz
+SHA256 88d2877760d0f6ce02b934d7b877eff610ed7d7ac0c97c443f94303b023335e7
+
+logs/rsl_rl/g1_tracking/2026-08-26_08-14-49_tracking_motiondecode00435_v558_antislip005_from_model80_shared_6gpu_384_60/model_20.pt
+SHA256 d6cdb3f51937f370950b4b281143b56fcb05b04fafbb6823fd1fe41652c5227c
+```
+
+三随机种子、每种子64环境的最终复评：
+
+| 场景 | episodes | 成功率 | 实际速度 | Body MPKPE | Foot slip |
+|---|---:|---:|---:|---:|---:|
+| clean | 192 | 100% | 4.846 m/s | 0.065 m | 0.674 m/s |
+| friction 0.6 | 192 | 99.5% | 4.823 m/s | 0.067 m | 0.719 m/s |
+| friction 0.4 | 192 | 99.5% | 4.768 m/s | 0.071 m | 0.805 m/s |
+| 0.25 m/s侧向推力 | 192 | 100% | 4.723 m/s | 0.065 m | 0.677 m/s |
+| 0.50 m/s侧向推力 | 192 | 100% | 4.619 m/s | 0.066 m | 0.656 m/s |
+
+推力在0.6秒施加；默认1.5秒晚于本动作结束，不能用于这个短动作的有效测试。结果位于：
+
+```text
+evaluations/Unitree-G1-Tracking/motiondecode00435_v558_antislip005_model20_robust_3seed64
+```
+
+最终离屏视频和接触表：
+
+```text
+logs/rsl_rl/g1_tracking/2026-08-26_08-14-49_tracking_motiondecode00435_v558_antislip005_from_model80_shared_6gpu_384_60/videos/play/rl-video-step-0.mp4
+artifacts/sprint_tracking_motiondecode00435/model20_v558_antislip005_contact_sheet.jpg
+```
+
+录像中策略保持连续抬膝冲刺，没有停止尾段、后仰制动、倒地或异常扭转。策略相对绿色参考仍有
+位移滞后，因此参考5.577 m/s不能当作策略真实速度；报告速度必须用独立评估位移除以时长。
+
+课程训练入口为 `scripts/run_g1_tracking_sprint_curriculum_shared.sh`，需显式设置
+`ALLOW_SHARED_GPUS=1`。本轮使用6卡、每卡384环境，训练退出后六卡都回到原进程显存基线。
+新增任务 `Unitree-G1-Tracking-AntiSlip` 只在普通平地追踪任务上增加轻量滑移惩罚，不包含
+`Unitree-G1-Tracking-Robust-AntiSlip` 的 actuator delay、payload 和强动力学随机化。
+
 ## 13. 下一阶段计划
 
 建议严格按顺序推进：
